@@ -28,16 +28,6 @@ final class CookieJar
         }
     }
 
-    public function get(string $name): ?string
-    {
-        return $this->cookies[$name] ?? null;
-    }
-
-    public function set(string $name, string $value): void
-    {
-        $this->cookies[$name] = $value;
-    }
-
     public function toHeader(): string
     {
         if (!$this->cookies) {

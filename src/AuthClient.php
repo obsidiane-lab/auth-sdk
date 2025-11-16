@@ -16,12 +16,14 @@ final class AuthClient
     private HttpClientInterface $http;
     private string $baseUrl;
     private CookieJar $jar;
+    private ?string $origin;
 
     public function __construct(?HttpClientInterface $http = null, ?string $baseUrl = '')
     {
         $this->http = $http ?? HttpClient::create();
         $this->baseUrl = rtrim((string) $baseUrl, '/');
         $this->jar = new CookieJar();
+        $this->origin = $this->computeOrigin($this->baseUrl);
     }
 
     private function url(string $path): string
@@ -48,14 +50,15 @@ final class AuthClient
     }
 
     /**
-     * Perform a request with current cookies and optional CSRF header.
+     * Perform a request with current cookies.
      * @param array<string,mixed> $options
      */
-    private function request(string $method, string $path, array $options = [], ?string $csrf = null): ResponseInterface
+    private function request(string $method, string $path, array $options = []): ResponseInterface
     {
         $headers = $options['headers'] ?? [];
-        if ($csrf) {
-            $headers['csrf-token'] = $csrf;
+
+        if ($this->origin && !isset($headers['Origin']) && !isset($headers['origin'])) {
+            $headers['Origin'] = $this->origin;
         }
 
         $cookieHeader = $this->jar->toHeader();
@@ -67,6 +70,23 @@ final class AuthClient
         $response = $this->http->request($method, $this->url($path), $options);
         $this->updateCookies($response->getHeaders(false));
         return $response;
+    }
+
+    private function computeOrigin(string $baseUrl): ?string
+    {
+        if ($baseUrl === '') {
+            return null;
+        }
+
+        $parts = parse_url($baseUrl);
+
+        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'])) {
+            return null;
+        }
+
+        $port = isset($parts['port']) ? ':'.$parts['port'] : '';
+
+        return sprintf('%s://%s%s', $parts['scheme'], $parts['host'], $port);
     }
 
     /**
@@ -93,9 +113,11 @@ final class AuthClient
      */
     public function login(string $email, string $password): array
     {
+        $csrf = $this->generateCsrfToken();
         $res = $this->request('POST', '/api/login', [
+            'headers' => ['csrf-token' => $csrf],
             'json' => [ 'email' => $email, 'password' => $password ],
-        ], $this->generateCsrfToken());
+        ]);
         if ($res->getStatusCode() >= 400) {
             throw new \RuntimeException('login_failed: '.$res->getStatusCode());
         }
@@ -108,7 +130,7 @@ final class AuthClient
      */
     public function refresh(?string $csrf = null): array
     {
-        $res = $this->request('POST', '/api/token/refresh', [], $csrf);
+        $res = $this->request('POST', '/api/token/refresh');
         if ($res->getStatusCode() >= 400) {
             throw new \RuntimeException('refresh_failed: '.$res->getStatusCode());
         }
@@ -118,7 +140,10 @@ final class AuthClient
     /** POST /api/auth/logout (CSRF required) */
     public function logout(): void
     {
-        $res = $this->request('POST', '/api/auth/logout', [], $this->generateCsrfToken());
+        $csrf = $this->generateCsrfToken();
+        $res = $this->request('POST', '/api/auth/logout', [
+            'headers' => ['csrf-token' => $csrf],
+        ]);
         $code = $res->getStatusCode();
         if ($code !== 204 && $code >= 400) {
             throw new \RuntimeException('logout_failed: '.$code);
@@ -132,7 +157,11 @@ final class AuthClient
      */
     public function register(array $input): array
     {
-        $res = $this->request('POST', '/api/auth/register', [ 'json' => $input ], $this->generateCsrfToken());
+        $csrf = $this->generateCsrfToken();
+        $res = $this->request('POST', '/api/auth/register', [
+            'headers' => ['csrf-token' => $csrf],
+            'json' => $input,
+        ]);
         if ($res->getStatusCode() >= 400) {
             throw new \RuntimeException('register_failed: '.$res->getStatusCode());
         }
@@ -145,7 +174,11 @@ final class AuthClient
      */
     public function passwordRequest(string $email): array
     {
-        $res = $this->request('POST', '/reset-password', [ 'json' => [ 'email' => $email ] ], $this->generateCsrfToken());
+        $csrf = $this->generateCsrfToken();
+        $res = $this->request('POST', '/reset-password', [
+            'headers' => ['csrf-token' => $csrf],
+            'json' => [ 'email' => $email ],
+        ]);
         if ($res->getStatusCode() >= 400) {
             throw new \RuntimeException('password_request_failed: '.$res->getStatusCode());
         }
@@ -155,7 +188,11 @@ final class AuthClient
     /** POST /reset-password/reset (CSRF `password_reset` requis) */
     public function passwordReset(string $token, string $password): void
     {
-        $res = $this->request('POST', '/reset-password/reset', [ 'json' => [ 'token' => $token, 'password' => $password ] ], $this->generateCsrfToken());
+        $csrf = $this->generateCsrfToken();
+        $res = $this->request('POST', '/reset-password/reset', [
+            'headers' => ['csrf-token' => $csrf],
+            'json' => [ 'token' => $token, 'password' => $password ],
+        ]);
         $code = $res->getStatusCode();
         if ($code !== 204 && $code >= 400) {
             throw new \RuntimeException('password_reset_failed: '.$code);
