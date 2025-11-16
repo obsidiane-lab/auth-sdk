@@ -46,4 +46,4 @@ public function login(): Response
 
 Le client gère automatiquement les cookies (access/refresh) et génère lui‑même un token CSRF stateless envoyé dans l’en‑tête `csrf-token` pour les mutations.
 
-Pour le détail des endpoints et des flows d’authentification, reportez‑vous au `docs/USER_GUIDE.md` du projet principal.
+Pour le détail des endpoints et des flows d’authentification, reportez‑vous au `README.md` du projet principal.

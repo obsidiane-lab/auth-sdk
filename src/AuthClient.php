@@ -108,13 +108,13 @@ final class AuthClient
     }
 
     /**
-     * POST /api/login (CSRF required)
+     * POST /api/auth/login (CSRF required)
      * @return array<string,mixed>
      */
     public function login(string $email, string $password): array
     {
         $csrf = $this->generateCsrfToken();
-        $res = $this->request('POST', '/api/login', [
+        $res = $this->request('POST', '/api/auth/login', [
             'headers' => ['csrf-token' => $csrf],
             'json' => [ 'email' => $email, 'password' => $password ],
         ]);
@@ -125,12 +125,12 @@ final class AuthClient
     }
 
     /**
-     * POST /api/token/refresh (CSRF optional)
+     * POST /api/auth/refresh (CSRF optional)
      * @return array<string,mixed>
      */
     public function refresh(?string $csrf = null): array
     {
-        $res = $this->request('POST', '/api/token/refresh');
+        $res = $this->request('POST', '/api/auth/refresh');
         if ($res->getStatusCode() >= 400) {
             throw new \RuntimeException('refresh_failed: '.$res->getStatusCode());
         }
@@ -169,13 +169,13 @@ final class AuthClient
     }
 
     /**
-     * POST /reset-password (CSRF `password_request` requis)
+     * POST /api/auth/password/forgot (CSRF requis)
      * @return array<string,mixed>
      */
     public function passwordRequest(string $email): array
     {
         $csrf = $this->generateCsrfToken();
-        $res = $this->request('POST', '/reset-password', [
+        $res = $this->request('POST', '/api/auth/password/forgot', [
             'headers' => ['csrf-token' => $csrf],
             'json' => [ 'email' => $email ],
         ]);
@@ -185,11 +185,11 @@ final class AuthClient
         return $res->toArray(false);
     }
 
-    /** POST /reset-password/reset (CSRF `password_reset` requis) */
+    /** POST /api/auth/password/reset (CSRF requis) */
     public function passwordReset(string $token, string $password): void
     {
         $csrf = $this->generateCsrfToken();
-        $res = $this->request('POST', '/reset-password/reset', [
+        $res = $this->request('POST', '/api/auth/password/reset', [
             'headers' => ['csrf-token' => $csrf],
             'json' => [ 'token' => $token, 'password' => $password ],
         ]);
