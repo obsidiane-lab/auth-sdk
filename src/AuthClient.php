@@ -7,8 +7,8 @@ use Obsidiane\AuthBundle\Model\Invite as InviteModel;
 use Obsidiane\AuthBundle\Model\Collection;
 use Obsidiane\AuthBundle\Model\User as UserModel;
 use Symfony\Component\BrowserKit\HttpBrowser;
+use Symfony\Component\BrowserKit\Response as BrowserResponse;
 use Symfony\Component\HttpClient\HttpClient;
-use Symfony\Contracts\HttpClient\ResponseInterface;
 
 /**
  * Minimal PHP SDK to interact with Obsidiane Auth endpoints.
@@ -54,9 +54,9 @@ final class AuthClient
      * Perform a request with current cookies.
      * @param array<string,mixed> $options
      */
-    private function request(string $method, string $path, array $options = []): ResponseInterface
+    private function request(string $method, string $path, array $options = []): BrowserResponse
     {
-        $headers = $options['headers'] ?? [];
+        $headers = $this->normalizeHeaders($options['headers'] ?? []);
 
         if ($this->origin && !isset($headers['Origin']) && !isset($headers['origin'])) {
             $headers['Origin'] = $this->origin;
@@ -75,7 +75,9 @@ final class AuthClient
         }
 
         $this->browser->request($method, $this->url($path), [], [], $server, $content ?? '');
-        return $this->browser->getResponse();
+        /** @var BrowserResponse $response */
+        $response = $this->browser->getResponse();
+        return $response;
     }
 
     /**
@@ -97,6 +99,20 @@ final class AuthClient
         }
 
         return $server;
+    }
+
+    /**
+     * @param array<string,string|int|float> $headers
+     * @return array<string,string>
+     */
+    private function normalizeHeaders(array $headers): array
+    {
+        $normalized = [];
+        foreach ($headers as $name => $value) {
+            $normalized[$name] = (string) $value;
+        }
+
+        return $normalized;
     }
 
     private function computeOrigin(string $baseUrl): ?string
@@ -130,9 +146,9 @@ final class AuthClient
     /**
      * @return array<string,mixed>
      */
-    private function decodeResponse(ResponseInterface $response): array
+    private function decodeResponse(BrowserResponse $response): array
     {
-        $status = $response->getStatusCode();
+        $status = $this->statusCode($response);
         $body = [];
 
         if ($status === 204) {
@@ -140,15 +156,12 @@ final class AuthClient
         }
 
         try {
-            $body = $response->toArray(false);
+            $decoded = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
+            $body = is_array($decoded) ? $decoded : [];
         } catch (\Throwable) {
-            $raw = $response->getContent(false);
+            $raw = $response->getContent();
             $decoded = json_decode($raw, true);
-            if (is_array($decoded)) {
-                $body = $decoded;
-            } else {
-                $body = ['raw' => $raw];
-            }
+            $body = is_array($decoded) ? $decoded : ['raw' => $raw];
         }
 
         if ($status >= 400) {
@@ -158,9 +171,21 @@ final class AuthClient
         return $body;
     }
 
-    private function throwForResponse(ResponseInterface $response): void
+    private function throwForResponse(BrowserResponse $response): void
     {
         $this->decodeResponse($response);
+    }
+
+    private function statusCode(BrowserResponse $response): int
+    {
+        if (method_exists($response, 'getStatusCode')) {
+            return (int) $response->getStatusCode();
+        }
+        if (method_exists($response, 'getStatus')) {
+            return (int) $response->getStatus();
+        }
+
+        return 0;
     }
 
     /**
