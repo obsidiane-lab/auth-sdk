@@ -5,7 +5,8 @@
     "license": "MIT",
     "autoload": {
         "psr-4": {
-            "Obsidiane\\AuthBundle\\": "src/"
+            "Obsidiane\\AuthBundle\\": "src/",
+            "Obsidiane\\AuthBundle\\Model\\": "src/Model/"
         }
     },
     "require": {

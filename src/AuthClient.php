@@ -2,6 +2,8 @@
 
 namespace Obsidiane\AuthBundle;
 
+use Obsidiane\AuthBundle\Model\Invite as InviteModel;
+use Obsidiane\AuthBundle\Model\User as UserModel;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 use Symfony\Component\HttpClient\HttpClient;
@@ -102,7 +104,11 @@ final class AuthClient
         return $res->toArray(false);
     }
 
-    private function generateCsrfToken(): string
+    /**
+     * Génère un token CSRF stateless compatible avec CsrfRequestValidator.
+     * Peut être réutilisé par les appels personnalisés côté consommateur.
+     */
+    public function generateCsrfToken(): string
     {
         return bin2hex(random_bytes(16));
     }
@@ -130,7 +136,14 @@ final class AuthClient
      */
     public function refresh(?string $csrf = null): array
     {
-        $res = $this->request('POST', '/api/auth/refresh');
+        $headers = [];
+        if ($csrf !== null && $csrf !== '') {
+            $headers['csrf-token'] = $csrf;
+        }
+
+        $res = $this->request('POST', '/api/auth/refresh', [
+            'headers' => $headers,
+        ]);
         if ($res->getStatusCode() >= 400) {
             throw new \RuntimeException('refresh_failed: '.$res->getStatusCode());
         }
@@ -197,5 +210,109 @@ final class AuthClient
         if ($code !== 204 && $code >= 400) {
             throw new \RuntimeException('password_reset_failed: '.$code);
         }
+    }
+
+    /**
+     * POST /api/auth/invite (CSRF required, admin only)
+     *
+     * @return array<string,mixed>
+     */
+    public function inviteUser(string $email): array
+    {
+        $csrf = $this->generateCsrfToken();
+        $res = $this->request('POST', '/api/auth/invite', [
+            'headers' => ['csrf-token' => $csrf],
+            'json' => ['email' => $email],
+        ]);
+        if ($res->getStatusCode() >= 400) {
+            throw new \RuntimeException('invite_failed: '.$res->getStatusCode());
+        }
+
+        return $res->toArray(false);
+    }
+
+    /**
+     * POST /api/auth/invite/complete (CSRF required)
+     *
+     * @return array<string,mixed>
+     */
+    public function completeInvite(string $token, string $password): array
+    {
+        $csrf = $this->generateCsrfToken();
+        $res = $this->request('POST', '/api/auth/invite/complete', [
+            'headers' => ['csrf-token' => $csrf],
+            'json' => [
+                'token' => $token,
+                'password' => $password,
+                'confirmPassword' => $password,
+            ],
+        ]);
+        if ($res->getStatusCode() >= 400) {
+            throw new \RuntimeException('invite_complete_failed: '.$res->getStatusCode());
+        }
+
+        return $res->toArray(false);
+    }
+
+    // --- ApiPlatform helpers (User & Invite resources) ---
+
+    /**
+     * GET /api/users/me (ApiResource<User>)
+     */
+    public function currentUserResource(): UserModel
+    {
+        $res = $this->request('GET', '/api/users/me', [
+            'headers' => ['Accept' => 'application/json'],
+        ]);
+        if ($res->getStatusCode() >= 400) {
+            throw new \RuntimeException('users_me_failed: '.$res->getStatusCode());
+        }
+
+        $data = $res->toArray(false);
+
+        return UserModel::fromArray($data);
+    }
+
+    /**
+     * GET /api/invite_users
+     *
+     * @return list<InviteModel>
+     */
+    public function listInvites(): array
+    {
+        $res = $this->request('GET', '/api/invite_users', [
+            'headers' => ['Accept' => 'application/json'],
+        ]);
+        if ($res->getStatusCode() >= 400) {
+            throw new \RuntimeException('invite_list_failed: '.$res->getStatusCode());
+        }
+
+        $data = $res->toArray(false);
+
+        $invites = [];
+        foreach ($data as $row) {
+            if (is_array($row)) {
+                $invites[] = InviteModel::fromArray($row);
+            }
+        }
+
+        return $invites;
+    }
+
+    /**
+     * GET /api/invite_users/{id}
+     */
+    public function getInvite(int $id): InviteModel
+    {
+        $res = $this->request('GET', '/api/invite_users/'.$id, [
+            'headers' => ['Accept' => 'application/json'],
+        ]);
+        if ($res->getStatusCode() >= 400) {
+            throw new \RuntimeException('invite_get_failed: '.$res->getStatusCode());
+        }
+
+        $data = $res->toArray(false);
+
+        return InviteModel::fromArray($data);
     }
 }
