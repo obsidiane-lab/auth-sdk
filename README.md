@@ -30,6 +30,17 @@ obsidiane_auth:
   base_url: '%env(string:OBSIDIANE_AUTH_BASE_URL)%'
 ```
 
+Si vous instanciez manuellement le client (hors bundle), fournissez au moins `baseUrl` et, si besoin, des en-têtes par défaut / un timeout :
+
+```php
+$auth = new \Obsidiane\AuthBundle\AuthClient(
+    http: null,
+    baseUrl: 'https://auth.example.com',
+    defaultHeaders: ['X-App' => 'my-service'],
+    timeoutMs: 10000
+);
+```
+
 ## Utilisation
 
 Injection de `Obsidiane\AuthBundle\AuthClient` dans vos services/contrôleurs:
@@ -44,7 +55,31 @@ public function login(): Response
 }
 ```
 
-Le client gère automatiquement les cookies (access/refresh) et génère lui‑même un token CSRF stateless envoyé dans l’en‑tête `csrf-token` pour les mutations.
+`base_url` est requis. Le client gère automatiquement les cookies (access/refresh) et génère lui‑même un token CSRF stateless envoyé dans l’en‑tête `csrf-token` pour les mutations. Par défaut, il envoie `Accept: application/json` et peut recevoir des en‑têtes supplémentaires via `$defaultHeaders` si vous instanciez manuellement le client.
+
+### Gestion des cookies
+
+Le client s’appuie uniquement sur le `CookieJar` du HttpClient Symfony pour gérer correctement les attributs de cookies (domaine, path, secure, expiration). Aucun jar custom n’est requis.
+
+### Gestion des erreurs
+
+Toutes les erreurs HTTP de l’API lèvent désormais une `Obsidiane\AuthBundle\Exception\ApiErrorException` contenant :
+
+- `getStatusCode()` : le status HTTP ;
+- `getErrorCode()` : le code métier renvoyé par l’API (ex. `EMAIL_ALREADY_USED`) ;
+- `getDetails()` : le tableau `details` renvoyé par l’API le cas échéant.
+
+```php
+use Obsidiane\AuthBundle\Exception\ApiErrorException;
+
+try {
+    $this->auth->inviteUser('invitee@example.com');
+} catch (ApiErrorException $e) {
+    if ($e->getErrorCode() === 'EMAIL_ALREADY_USED') {
+        // ce compte est déjà actif
+    }
+}
+```
 
 Pour le détail des endpoints et des flows d’authentification, reportez‑vous au `README.md` du projet principal.
 
@@ -96,6 +131,7 @@ $invite = $this->auth->getInvite(1); // GET /api/invite_users/1
 ```php
 // POST /api/auth/invite (admin uniquement)
 $status = $this->auth->inviteUser('invitee@example.com'); // ['status' => 'INVITE_SENT', ...]
+// Si le compte est déjà actif, une ApiErrorException est levée avec le code EMAIL_ALREADY_USED.
 
 // POST /api/auth/invite/complete
 $result = $this->auth->completeInvite('invitation-token', 'Secret123!');

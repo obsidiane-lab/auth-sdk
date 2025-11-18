@@ -2,8 +2,12 @@
 
 namespace Obsidiane\AuthBundle;
 
+use Obsidiane\AuthBundle\Exception\ApiErrorException;
 use Obsidiane\AuthBundle\Model\Invite as InviteModel;
+use Obsidiane\AuthBundle\Model\Collection;
 use Obsidiane\AuthBundle\Model\User as UserModel;
+use Symfony\Component\HttpClient\Cookie\CookieJar;
+use Symfony\Component\HttpClient\Cookie\CookieJarInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 use Symfony\Component\HttpClient\HttpClient;
@@ -17,38 +21,32 @@ final class AuthClient
 {
     private HttpClientInterface $http;
     private string $baseUrl;
-    private CookieJar $jar;
+    private CookieJarInterface $jar;
     private ?string $origin;
+    /** @var array<string,string> */
+    private array $defaultHeaders;
+    private ?int $timeoutMs;
 
-    public function __construct(?HttpClientInterface $http = null, ?string $baseUrl = '')
+    /**
+     * @param array<string,string> $defaultHeaders
+     */
+    public function __construct(?HttpClientInterface $http = null, string $baseUrl = '', array $defaultHeaders = [], ?int $timeoutMs = null)
     {
-        $this->http = $http ?? HttpClient::create();
-        $this->baseUrl = rtrim((string) $baseUrl, '/');
+        if ($baseUrl === '') {
+            throw new \InvalidArgumentException('baseUrl is required');
+        }
+
         $this->jar = new CookieJar();
+        $this->http = $http ?? HttpClient::create(['cookies' => $this->jar]);
+        $this->baseUrl = rtrim($baseUrl, '/');
         $this->origin = $this->computeOrigin($this->baseUrl);
+        $this->defaultHeaders = $defaultHeaders;
+        $this->timeoutMs = $timeoutMs;
     }
 
     private function url(string $path): string
     {
         return $this->baseUrl.$path;
-    }
-
-    /**
-     * @param array<string, mixed> $headers
-     */
-    private function updateCookies(array $headers): void
-    {
-        $set = [];
-        foreach ($headers as $name => $values) {
-            if (strtolower((string) $name) === 'set-cookie') {
-                foreach ((array) $values as $val) {
-                    $set[] = (string) $val;
-                }
-            }
-        }
-        if ($set) {
-            $this->jar->addFromSetCookie($set);
-        }
     }
 
     /**
@@ -63,15 +61,19 @@ final class AuthClient
             $headers['Origin'] = $this->origin;
         }
 
-        $cookieHeader = $this->jar->toHeader();
-        if ($cookieHeader !== '') {
-            $headers['Cookie'] = $cookieHeader;
-        }
+        $headers = array_merge(
+            ['Content-Type' => 'application/json', 'Accept' => 'application/json'],
+            $this->defaultHeaders,
+            $headers
+        );
 
         $options['headers'] = $headers + ['Content-Type' => 'application/json'];
-        $response = $this->http->request($method, $this->url($path), $options);
-        $this->updateCookies($response->getHeaders(false));
-        return $response;
+
+        if (!isset($options['timeout']) && $this->timeoutMs !== null && $this->timeoutMs > 0) {
+            $options['timeout'] = $this->timeoutMs / 1000;
+        }
+
+        return $this->http->request($method, $this->url($path), $options);
     }
 
     private function computeOrigin(string $baseUrl): ?string
@@ -92,16 +94,59 @@ final class AuthClient
     }
 
     /**
+     * @param array<string,mixed> $options
+     * @return array<string,mixed>
+     */
+    private function requestJson(string $method, string $path, array $options = []): array
+    {
+        $response = $this->request($method, $path, $options);
+
+        return $this->decodeResponse($response);
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function decodeResponse(ResponseInterface $response): array
+    {
+        $status = $response->getStatusCode();
+        $body = [];
+
+        if ($status === 204) {
+            return $body;
+        }
+
+        try {
+            $body = $response->toArray(false);
+        } catch (\Throwable) {
+            $raw = $response->getContent(false);
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $body = $decoded;
+            } else {
+                $body = ['raw' => $raw];
+            }
+        }
+
+        if ($status >= 400) {
+            throw ApiErrorException::fromPayload($status, $body);
+        }
+
+        return $body;
+    }
+
+    private function throwForResponse(ResponseInterface $response): void
+    {
+        $this->decodeResponse($response);
+    }
+
+    /**
      * GET /api/auth/me
      * @return array<string,mixed>
      */
     public function me(): array
     {
-        $res = $this->request('GET', '/api/auth/me');
-        if ($res->getStatusCode() >= 400) {
-            throw new \RuntimeException('me_failed: '.$res->getStatusCode());
-        }
-        return $res->toArray(false);
+        return $this->requestJson('GET', '/api/auth/me');
     }
 
     /**
@@ -120,14 +165,10 @@ final class AuthClient
     public function login(string $email, string $password): array
     {
         $csrf = $this->generateCsrfToken();
-        $res = $this->request('POST', '/api/auth/login', [
+        return $this->requestJson('POST', '/api/auth/login', [
             'headers' => ['csrf-token' => $csrf],
             'json' => [ 'email' => $email, 'password' => $password ],
         ]);
-        if ($res->getStatusCode() >= 400) {
-            throw new \RuntimeException('login_failed: '.$res->getStatusCode());
-        }
-        return $res->toArray(false);
     }
 
     /**
@@ -141,13 +182,9 @@ final class AuthClient
             $headers['csrf-token'] = $csrf;
         }
 
-        $res = $this->request('POST', '/api/auth/refresh', [
+        return $this->requestJson('POST', '/api/auth/refresh', [
             'headers' => $headers,
         ]);
-        if ($res->getStatusCode() >= 400) {
-            throw new \RuntimeException('refresh_failed: '.$res->getStatusCode());
-        }
-        return $res->toArray(false);
     }
 
     /** POST /api/auth/logout (CSRF required) */
@@ -159,7 +196,7 @@ final class AuthClient
         ]);
         $code = $res->getStatusCode();
         if ($code !== 204 && $code >= 400) {
-            throw new \RuntimeException('logout_failed: '.$code);
+            $this->throwForResponse($res);
         }
     }
 
@@ -171,14 +208,10 @@ final class AuthClient
     public function register(array $input): array
     {
         $csrf = $this->generateCsrfToken();
-        $res = $this->request('POST', '/api/auth/register', [
+        return $this->requestJson('POST', '/api/auth/register', [
             'headers' => ['csrf-token' => $csrf],
             'json' => $input,
         ]);
-        if ($res->getStatusCode() >= 400) {
-            throw new \RuntimeException('register_failed: '.$res->getStatusCode());
-        }
-        return $res->toArray(false);
     }
 
     /**
@@ -188,14 +221,10 @@ final class AuthClient
     public function passwordRequest(string $email): array
     {
         $csrf = $this->generateCsrfToken();
-        $res = $this->request('POST', '/api/auth/password/forgot', [
+        return $this->requestJson('POST', '/api/auth/password/forgot', [
             'headers' => ['csrf-token' => $csrf],
             'json' => [ 'email' => $email ],
         ]);
-        if ($res->getStatusCode() >= 400) {
-            throw new \RuntimeException('password_request_failed: '.$res->getStatusCode());
-        }
-        return $res->toArray(false);
     }
 
     /** POST /api/auth/password/reset (CSRF requis) */
@@ -208,7 +237,7 @@ final class AuthClient
         ]);
         $code = $res->getStatusCode();
         if ($code !== 204 && $code >= 400) {
-            throw new \RuntimeException('password_reset_failed: '.$code);
+            $this->throwForResponse($res);
         }
     }
 
@@ -220,15 +249,10 @@ final class AuthClient
     public function inviteUser(string $email): array
     {
         $csrf = $this->generateCsrfToken();
-        $res = $this->request('POST', '/api/auth/invite', [
+        return $this->requestJson('POST', '/api/auth/invite', [
             'headers' => ['csrf-token' => $csrf],
             'json' => ['email' => $email],
         ]);
-        if ($res->getStatusCode() >= 400) {
-            throw new \RuntimeException('invite_failed: '.$res->getStatusCode());
-        }
-
-        return $res->toArray(false);
     }
 
     /**
@@ -239,7 +263,7 @@ final class AuthClient
     public function completeInvite(string $token, string $password): array
     {
         $csrf = $this->generateCsrfToken();
-        $res = $this->request('POST', '/api/auth/invite/complete', [
+        return $this->requestJson('POST', '/api/auth/invite/complete', [
             'headers' => ['csrf-token' => $csrf],
             'json' => [
                 'token' => $token,
@@ -247,11 +271,6 @@ final class AuthClient
                 'confirmPassword' => $password,
             ],
         ]);
-        if ($res->getStatusCode() >= 400) {
-            throw new \RuntimeException('invite_complete_failed: '.$res->getStatusCode());
-        }
-
-        return $res->toArray(false);
     }
 
     // --- ApiPlatform helpers (User & Invite resources) ---
@@ -261,14 +280,9 @@ final class AuthClient
      */
     public function currentUserResource(): UserModel
     {
-        $res = $this->request('GET', '/api/users/me', [
+        $data = $this->requestJson('GET', '/api/users/me', [
             'headers' => ['Accept' => 'application/json'],
         ]);
-        if ($res->getStatusCode() >= 400) {
-            throw new \RuntimeException('users_me_failed: '.$res->getStatusCode());
-        }
-
-        $data = $res->toArray(false);
 
         return UserModel::fromArray($data);
     }
@@ -280,14 +294,18 @@ final class AuthClient
      */
     public function listInvites(): array
     {
-        $res = $this->request('GET', '/api/invite_users', [
+        $data = $this->requestJson('GET', '/api/invite_users', [
             'headers' => ['Accept' => 'application/json'],
         ]);
-        if ($res->getStatusCode() >= 400) {
-            throw new \RuntimeException('invite_list_failed: '.$res->getStatusCode());
-        }
 
-        $data = $res->toArray(false);
+        if (isset($data['items']) && is_array($data['items'])) {
+            $collection = Collection::fromArray($data);
+            $invites = [];
+            foreach ($collection->all() as $item) {
+                $invites[] = InviteModel::fromArray($item->data());
+            }
+            return $invites;
+        }
 
         $invites = [];
         foreach ($data as $row) {
@@ -304,14 +322,9 @@ final class AuthClient
      */
     public function getInvite(int $id): InviteModel
     {
-        $res = $this->request('GET', '/api/invite_users/'.$id, [
+        $data = $this->requestJson('GET', '/api/invite_users/'.$id, [
             'headers' => ['Accept' => 'application/json'],
         ]);
-        if ($res->getStatusCode() >= 400) {
-            throw new \RuntimeException('invite_get_failed: '.$res->getStatusCode());
-        }
-
-        $data = $res->toArray(false);
 
         return InviteModel::fromArray($data);
     }
