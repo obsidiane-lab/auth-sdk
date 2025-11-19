@@ -98,7 +98,7 @@ Le SDK fournit des modèles simples qui reflètent les ressources exposées par 
 - `Obsidiane\AuthBundle\Model\Item<T>` : wrapper générique pour un item JSON‑LD (métadonnées `@id`, `@type`, `@context` + attributs métiers).
 - `Obsidiane\AuthBundle\Model\Collection<T>` : wrapper générique pour une collection JSON‑LD (métadonnées + `items` + `totalItems`).
 
-Ces classes disposent d’une méthode `fromArray(array $data)` compatible avec les payloads JSON / JSON‑LD retournés par `/api/users/*` et `/api/invite_users*`. `Item` et `Collection` peuvent être utilisés si vous travaillez directement avec la représentation JSON‑LD (format `jsonld` d’API Platform v4, sans Hydra).
+Ces classes disposent d’une méthode `fromArray(array $data)` compatible avec les payloads JSON‑LD retournés par `/api/users/*` et `/api/invite_users*`. `Item` et `Collection` peuvent être utilisés si vous travaillez directement avec la représentation JSON‑LD (format `jsonld` d’API Platform v4, sans Hydra).
 
 ### Helpers User (ApiPlatform)
 

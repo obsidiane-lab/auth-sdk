@@ -3,7 +3,6 @@
 namespace Obsidiane\AuthBundle;
 
 use Obsidiane\AuthBundle\Model\Invite as InviteModel;
-use Obsidiane\AuthBundle\Model\Collection;
 use Obsidiane\AuthBundle\Model\User as UserModel;
 
 /**
@@ -38,40 +37,35 @@ final class AuthClient
     }
 
     /**
-     * GET a JSON-LD resource.
+     * GET a JSON resource.
      *
      * @return array<string,mixed>
      */
-    private function getJsonLd(string $path): array
+    private function getJson(string $path): array
     {
-        return $this->api->requestJson('GET', $path, [
-            'headers' => ['Accept' => 'application/ld+json'],
-        ]);
+        return $this->api->requestJson('GET', $path);
     }
 
     /**
-     * GET a JSON-LD collection and map each item.
+     * GET a JSON collection and map each item.
      *
      * @template T
      * @param callable(array<string,mixed>):T $mapper
      * @return list<T>
      */
-    private function getJsonLdCollection(string $path, callable $mapper): array
+    private function getJsonCollection(string $path, callable $mapper): array
     {
-        $data = $this->getJsonLd($path);
+        $data = $this->getJson($path);
 
+        $rows = [];
         if (isset($data['items']) && is_array($data['items'])) {
-            $collection = Collection::fromArray($data);
-            $items = [];
-            foreach ($collection->all() as $item) {
-                $items[] = $mapper($item->data());
-            }
-
-            return $items;
+            $rows = $data['items'];
+        } elseif (is_array($data)) {
+            $rows = $data;
         }
 
         $items = [];
-        foreach ($data as $row) {
+        foreach ($rows as $row) {
             if (is_array($row)) {
                 $items[] = $mapper($row);
             }
@@ -244,7 +238,7 @@ final class AuthClient
      */
     public function listUsers(): array
     {
-        return $this->getJsonLdCollection(
+        return $this->getJsonCollection(
             self::PATH_USERS,
             static fn (array $row): UserModel => UserModel::fromArray($row),
         );
@@ -255,7 +249,7 @@ final class AuthClient
      */
     public function getUser(int $id): UserModel
     {
-        $data = $this->getJsonLd(self::PATH_USERS.'/'.$id);
+        $data = $this->getJson(self::PATH_USERS.'/'.$id);
 
         return UserModel::fromArray($data);
     }
@@ -267,7 +261,7 @@ final class AuthClient
      */
     public function listInvites(): array
     {
-        return $this->getJsonLdCollection(
+        return $this->getJsonCollection(
             self::PATH_INVITE_USERS,
             static fn (array $row): InviteModel => InviteModel::fromArray($row),
         );
@@ -278,7 +272,7 @@ final class AuthClient
      */
     public function getInvite(int $id): InviteModel
     {
-        $data = $this->getJsonLd(self::PATH_INVITE_USERS.'/'.$id);
+        $data = $this->getJson(self::PATH_INVITE_USERS.'/'.$id);
 
         return InviteModel::fromArray($data);
     }

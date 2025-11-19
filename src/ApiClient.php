@@ -62,7 +62,10 @@ final class ApiClient
         }
 
         $headers = array_merge(
-            ['Content-Type' => 'application/json', 'Accept' => 'application/json'],
+            [
+                'Content-Type' => 'application/json',
+                'Accept' => 'application/ld+json',
+            ],
             $this->defaultHeaders,
             $headers
         );
