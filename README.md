@@ -36,7 +36,10 @@ Le client repose sur `HttpBrowser` (BrowserKit) + `HttpClient` pour bénéficier
 $auth = new \Obsidiane\AuthBundle\AuthClient(
     baseUrl: 'https://auth.example.com',
     defaultHeaders: ['X-App' => 'my-service'],
-    timeoutMs: 10000
+    timeoutMs: 10000,
+    // Origin HTTP utilisé pour la validation CSRF stateless.
+    // Doit matcher la politique ALLOWED_ORIGINS ou le host du service d'auth.
+    origin: 'https://app.example.com'
 );
 ```
 
@@ -49,7 +52,8 @@ public function __construct(private AuthClient $auth) {}
 
 public function login(): Response
 {
-    $payload = $this->auth->login('user@example.com', 'Secret123!');
+    // POST /api/auth/login
+    $payload = $this->auth->auth()->login('user@example.com', 'Secret123!');
     // ...
 }
 ```
@@ -68,7 +72,7 @@ Toutes les erreurs HTTP de l’API lèvent désormais une `Obsidiane\AuthBundle\
 use Obsidiane\AuthBundle\Exception\ApiErrorException;
 
 try {
-    $this->auth->inviteUser('invitee@example.com');
+    $this->auth->auth()->inviteUser('invitee@example.com');
 } catch (ApiErrorException $e) {
     if ($e->getErrorCode() === 'EMAIL_ALREADY_USED') {
         // ce compte est déjà actif
@@ -93,48 +97,72 @@ Le SDK fournit des modèles simples qui reflètent les ressources exposées par 
 
 ### Modèles
 
-- `Obsidiane\AuthBundle\Model\User` : projection de la ressource `User` (`id`, `email`, `roles`, `isEmailVerified`).
-- `Obsidiane\AuthBundle\Model\Invite` : projection de la ressource `InviteUser` (`id`, `email`, `createdAt`, `expiresAt`, `acceptedAt`).
 - `Obsidiane\AuthBundle\Model\Item<T>` : wrapper générique pour un item JSON‑LD (métadonnées `@id`, `@type`, `@context` + attributs métiers).
-- `Obsidiane\AuthBundle\Model\Collection<T>` : wrapper générique pour une collection JSON‑LD (métadonnées + `items` + `totalItems`).
+- `Obsidiane\AuthBundle\Model\Collection<T>` : wrapper générique pour une collection JSON‑LD (métadonnées + tableau d’items + `totalItems`).
+- `Obsidiane\AuthBundle\Model\User` : projection métier simple (`id`, `email`, `roles`, `isEmailVerified`), optionnelle.
+- `Obsidiane\AuthBundle\Model\Invite` : projection métier simple (`id`, `email`, `createdAt`, `expiresAt`, `acceptedAt`), optionnelle.
 
-Ces classes disposent d’une méthode `fromArray(array $data)` compatible avec les payloads JSON‑LD retournés par `/api/users/*` et `/api/invite_users*`. `Item` et `Collection` peuvent être utilisés si vous travaillez directement avec la représentation JSON‑LD (format `jsonld` d’API Platform v4, sans Hydra).
+`Item` et `Collection` disposent d’une méthode `fromArray(array $data)` compatible avec les payloads JSON‑LD retournés par `/api/users/*` et `/api/invite_users*`. Elles permettent de travailler directement avec la représentation JSON‑LD exposée par l’API.
 
-### Helpers User (ApiPlatform)
+### Ressource User (Api Platform)
 
-```php
-use Obsidiane\AuthBundle\Model\User;
-
-/** @var User[] $users */
-$users = $this->auth->listUsers(); // GET /api/users
-
-/** @var User $user */
-$user = $this->auth->getUser(1); // GET /api/users/1
-
-// DELETE /api/users/1
-$this->auth->deleteUser(1);
-```
-
-### Helpers Invite (ApiPlatform)
+Les méthodes d’API suivantes renvoient désormais **le JSON‑LD brut** :
 
 ```php
-use Obsidiane\AuthBundle\Model\Invite;
+// GET /api/users
+/** @var array<string,mixed> $collection */
+$collection = $this->auth->users()->list();
 
-/** @var Invite[] $invites */
-$invites = $this->auth->listInvites(); // GET /api/invite_users
-
-/** @var Invite $invite */
-$invite = $this->auth->getInvite(1); // GET /api/invite_users/1
+// GET /api/users/1
+/** @var array<string,mixed> $userResource */
+$userResource = $this->auth->users()->get(1);
 ```
+
+Si vous souhaitez projeter ces payloads en objets typés, vous pouvez utiliser `Item`/`Collection` ou vos propres DTO :
+
+```php
+use Obsidiane\AuthBundle\Model\Collection;
+use Obsidiane\AuthBundle\Model\Item;
+
+/** @var array<string,mixed> $collection */
+$collection = $this->auth->users()->list();
+
+// Collection JSON-LD
+$users = Collection::fromArray($collection);
+
+// Items JSON-LD
+/** @var Item<array<string,mixed>> $first */
+$first = $users->all()[0] ?? null;
+
+if ($first !== null) {
+    $attributes = $first->data(); // ['email' => '...', 'roles' => [...], ...]
+}
+```
+
+### Ressource InviteUser (Api Platform)
+
+Même logique pour `/api/invite_users` :
+
+```php
+// GET /api/invite_users
+/** @var array<string,mixed> $collection */
+$collection = $this->auth->invites()->list();
+
+// GET /api/invite_users/1
+/** @var array<string,mixed> $inviteResource */
+$inviteResource = $this->auth->invites()->get(1);
+```
+
+Là encore, vous pouvez utiliser `Collection::fromArray()` et `Item::fromArray()` pour manipuler la structure JSON‑LD si besoin, ou projeter ces données vers vos propres modèles (par exemple `Invite` côté application).
 
 ### Helpers d’invitation (endpoints auth)
 
 ```php
 // POST /api/auth/invite (admin uniquement)
-$status = $this->auth->inviteUser('invitee@example.com'); // ['status' => 'INVITE_SENT', ...]
+$status = $this->auth->auth()->inviteUser('invitee@example.com'); // ['status' => 'INVITE_SENT', ...]
 // Si le compte est déjà actif, une ApiErrorException est levée avec le code EMAIL_ALREADY_USED.
 
 // POST /api/auth/invite/complete
-$result = $this->auth->completeInvite('invitation-token', 'Secret123!');
+$result = $this->auth->auth()->completeInvite('invitation-token', 'Secret123!');
 // $result contient le payload utilisateur (similaire à l’inscription)
 ```

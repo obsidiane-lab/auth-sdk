@@ -9,14 +9,14 @@ final class ApiErrorException extends \RuntimeException
 {
     /**
      * @param array<string,mixed>|null $details
-     * @param array<string,mixed> $payload
+     * @param array<string,mixed>      $payload
      */
     public function __construct(
-        private readonly int    $statusCode,
+        private readonly int $statusCode,
         private readonly string $errorCode,
         private readonly ?array $details = null,
-        private readonly array  $payload = [],
-        string                  $message = ''
+        private readonly array $payload = [],
+        string $message = '',
     ) {
         parent::__construct($message === '' ? $errorCode : $message, $statusCode);
     }
@@ -59,3 +59,4 @@ final class ApiErrorException extends \RuntimeException
         return $this->payload;
     }
 }
+
