@@ -56,10 +56,6 @@ public function login(): Response
 
 `base_url` est requis. Le client gère automatiquement les cookies (access/refresh) et génère lui‑même un token CSRF stateless envoyé dans l’en‑tête `csrf-token` pour les mutations. Par défaut, il envoie `Accept: application/json` et peut recevoir des en‑têtes supplémentaires via `$defaultHeaders` si vous instanciez manuellement le client.
 
-### Gestion des cookies
-
-Le client s’appuie sur la gestion de cookies intégrée au HttpClient Symfony (`cookies: true`) pour respecter domaine/path/secure/expiration. Aucun jar custom n’est requis.
-
 ### Gestion des erreurs
 
 Toutes les erreurs HTTP de l’API lèvent désormais une `Obsidiane\AuthBundle\Exception\ApiErrorException` contenant :
@@ -100,7 +96,7 @@ Le SDK fournit des modèles simples qui reflètent les ressources exposées par 
 - `Obsidiane\AuthBundle\Model\User` : projection de la ressource `User` (`id`, `email`, `roles`, `isEmailVerified`).
 - `Obsidiane\AuthBundle\Model\Invite` : projection de la ressource `InviteUser` (`id`, `email`, `createdAt`, `expiresAt`, `acceptedAt`).
 - `Obsidiane\AuthBundle\Model\Item<T>` : wrapper générique pour un item JSON‑LD (métadonnées `@id`, `@type`, `@context` + attributs métiers).
-- `Obsidiane\AuthBundle\Model\Collection<T>` : wrapper générique pour une collection JSON‑LD sans Hydra (métadonnées + `items` + `totalItems`).
+- `Obsidiane\AuthBundle\Model\Collection<T>` : wrapper générique pour une collection JSON‑LD (métadonnées + `items` + `totalItems`).
 
 Ces classes disposent d’une méthode `fromArray(array $data)` compatible avec les payloads JSON / JSON‑LD retournés par `/api/users/*` et `/api/invite_users*`. `Item` et `Collection` peuvent être utilisés si vous travaillez directement avec la représentation JSON‑LD (format `jsonld` d’API Platform v4, sans Hydra).
 
@@ -109,8 +105,14 @@ Ces classes disposent d’une méthode `fromArray(array $data)` compatible avec 
 ```php
 use Obsidiane\AuthBundle\Model\User;
 
+/** @var User[] $users */
+$users = $this->auth->listUsers(); // GET /api/users
+
 /** @var User $user */
-$user = $this->auth->currentUserResource(); // GET /api/users/me
+$user = $this->auth->getUser(1); // GET /api/users/1
+
+// DELETE /api/users/1
+$this->auth->deleteUser(1);
 ```
 
 ### Helpers Invite (ApiPlatform)

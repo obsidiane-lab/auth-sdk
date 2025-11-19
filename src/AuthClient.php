@@ -2,13 +2,9 @@
 
 namespace Obsidiane\AuthBundle;
 
-use Obsidiane\AuthBundle\Exception\ApiErrorException;
 use Obsidiane\AuthBundle\Model\Invite as InviteModel;
 use Obsidiane\AuthBundle\Model\Collection;
 use Obsidiane\AuthBundle\Model\User as UserModel;
-use Symfony\Component\BrowserKit\HttpBrowser;
-use Symfony\Component\BrowserKit\Response as BrowserResponse;
-use Symfony\Component\HttpClient\HttpClient;
 
 /**
  * Minimal PHP SDK to interact with Obsidiane Auth endpoints.
@@ -17,175 +13,91 @@ use Symfony\Component\HttpClient\HttpClient;
  */
 final class AuthClient
 {
-    private HttpBrowser $browser;
-    private string $baseUrl;
-    private ?string $origin;
-    /** @var array<string,string> */
-    private array $defaultHeaders;
-    private ?int $timeoutMs;
+    private const CSRF_HEADER = 'csrf-token';
+
+    private const PATH_AUTH_ME = '/api/auth/me';
+    private const PATH_AUTH_LOGIN = '/api/auth/login';
+    private const PATH_AUTH_REFRESH = '/api/auth/refresh';
+    private const PATH_AUTH_LOGOUT = '/api/auth/logout';
+    private const PATH_AUTH_REGISTER = '/api/auth/register';
+    private const PATH_AUTH_PASSWORD_FORGOT = '/api/auth/password/forgot';
+    private const PATH_AUTH_PASSWORD_RESET = '/api/auth/password/reset';
+    private const PATH_AUTH_INVITE = '/api/auth/invite';
+    private const PATH_AUTH_INVITE_COMPLETE = '/api/auth/invite/complete';
+    private const PATH_USERS = '/api/users';
+    private const PATH_INVITE_USERS = '/api/invite_users';
+
+    private ApiClient $api;
 
     /**
      * @param array<string,string> $defaultHeaders
      */
     public function __construct(string $baseUrl = '', array $defaultHeaders = [], ?int $timeoutMs = null)
     {
-        if ($baseUrl === '') {
-            throw new \InvalidArgumentException('baseUrl is required');
-        }
-
-        $clientOptions = ['cookies' => true];
-        if ($timeoutMs !== null && $timeoutMs > 0) {
-            $clientOptions['timeout'] = $timeoutMs / 1000;
-        }
-
-        $this->browser = new HttpBrowser(HttpClient::create($clientOptions));
-        $this->baseUrl = rtrim($baseUrl, '/');
-        $this->origin = $this->computeOrigin($this->baseUrl);
-        $this->defaultHeaders = $defaultHeaders;
-        $this->timeoutMs = $timeoutMs;
-    }
-
-    private function url(string $path): string
-    {
-        return $this->baseUrl.$path;
+        $this->api = new ApiClient($baseUrl, $defaultHeaders, $timeoutMs);
     }
 
     /**
-     * Perform a request with current cookies.
-     * @param array<string,mixed> $options
+     * GET a JSON-LD resource.
+     *
+     * @return array<string,mixed>
      */
-    private function request(string $method, string $path, array $options = []): BrowserResponse
+    private function getJsonLd(string $path): array
     {
-        $headers = $this->normalizeHeaders($options['headers'] ?? []);
-
-        if ($this->origin && !isset($headers['Origin']) && !isset($headers['origin'])) {
-            $headers['Origin'] = $this->origin;
-        }
-
-        $headers = array_merge(
-            ['Content-Type' => 'application/json', 'Accept' => 'application/json'],
-            $this->defaultHeaders,
-            $headers
-        );
-
-        $server = $this->buildServerHeaders($headers);
-        $content = $options['body'] ?? null;
-        if (isset($options['json'])) {
-            $content = json_encode($options['json'], JSON_THROW_ON_ERROR);
-        }
-
-        $this->browser->request($method, $this->url($path), [], [], $server, $content ?? '');
-        /** @var BrowserResponse $response */
-        $response = $this->browser->getResponse();
-        return $response;
+        return $this->api->requestJson('GET', $path, [
+            'headers' => ['Accept' => 'application/ld+json'],
+        ]);
     }
 
     /**
-     * @param array<string,string> $headers
-     * @return array<string,string>
+     * GET a JSON-LD collection and map each item.
+     *
+     * @template T
+     * @param callable(array<string,mixed>):T $mapper
+     * @return list<T>
      */
-    private function buildServerHeaders(array $headers): array
+    private function getJsonLdCollection(string $path, callable $mapper): array
     {
-        $server = [];
-        foreach ($headers as $name => $value) {
-            $key = strtoupper(str_replace('-', '_', $name));
-            if ($key === 'CONTENT_TYPE') {
-                $server['CONTENT_TYPE'] = $value;
-            } elseif ($key === 'ACCEPT') {
-                $server['HTTP_ACCEPT'] = $value;
-            } else {
-                $server['HTTP_'.$key] = $value;
+        $data = $this->getJsonLd($path);
+
+        if (isset($data['items']) && is_array($data['items'])) {
+            $collection = Collection::fromArray($data);
+            $items = [];
+            foreach ($collection->all() as $item) {
+                $items[] = $mapper($item->data());
+            }
+
+            return $items;
+        }
+
+        $items = [];
+        foreach ($data as $row) {
+            if (is_array($row)) {
+                $items[] = $mapper($row);
             }
         }
 
-        return $server;
+        return $items;
     }
 
     /**
-     * @param array<string,string|int|float> $headers
      * @return array<string,string>
      */
-    private function normalizeHeaders(array $headers): array
+    private function buildRequiredCsrfHeaders(): array
     {
-        $normalized = [];
-        foreach ($headers as $name => $value) {
-            $normalized[$name] = (string) $value;
-        }
-
-        return $normalized;
-    }
-
-    private function computeOrigin(string $baseUrl): ?string
-    {
-        if ($baseUrl === '') {
-            return null;
-        }
-
-        $parts = parse_url($baseUrl);
-
-        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'])) {
-            return null;
-        }
-
-        $port = isset($parts['port']) ? ':'.$parts['port'] : '';
-
-        return sprintf('%s://%s%s', $parts['scheme'], $parts['host'], $port);
+        return [self::CSRF_HEADER => $this->generateCsrfToken()];
     }
 
     /**
-     * @param array<string,mixed> $options
-     * @return array<string,mixed>
+     * @return array<string,string>
      */
-    private function requestJson(string $method, string $path, array $options = []): array
+    private function buildOptionalCsrfHeaders(?string $csrf): array
     {
-        $response = $this->request($method, $path, $options);
-
-        return $this->decodeResponse($response);
-    }
-
-    /**
-     * @return array<string,mixed>
-     */
-    private function decodeResponse(BrowserResponse $response): array
-    {
-        $status = $this->statusCode($response);
-        $body = [];
-
-        if ($status === 204) {
-            return $body;
+        if ($csrf === null || $csrf === '') {
+            return [];
         }
 
-        try {
-            $decoded = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
-            $body = is_array($decoded) ? $decoded : [];
-        } catch (\Throwable) {
-            $raw = $response->getContent();
-            $decoded = json_decode($raw, true);
-            $body = is_array($decoded) ? $decoded : ['raw' => $raw];
-        }
-
-        if ($status >= 400) {
-            throw ApiErrorException::fromPayload($status, $body);
-        }
-
-        return $body;
-    }
-
-    private function throwForResponse(BrowserResponse $response): void
-    {
-        $this->decodeResponse($response);
-    }
-
-    private function statusCode(BrowserResponse $response): int
-    {
-        if (method_exists($response, 'getStatusCode')) {
-            return (int) $response->getStatusCode();
-        }
-        if (method_exists($response, 'getStatus')) {
-            return (int) $response->getStatus();
-        }
-
-        return 0;
+        return [self::CSRF_HEADER => $csrf];
     }
 
     /**
@@ -194,7 +106,7 @@ final class AuthClient
      */
     public function me(): array
     {
-        return $this->requestJson('GET', '/api/auth/me');
+        return $this->api->requestJson('GET', self::PATH_AUTH_ME);
     }
 
     /**
@@ -207,15 +119,46 @@ final class AuthClient
     }
 
     /**
+     * Helper to POST JSON with a fresh CSRF token and expect a JSON payload.
+     *
+     * @param array<string,mixed> $json
+     * @return array<string,mixed>
+     */
+    private function postJsonWithCsrf(string $path, array $json): array
+    {
+        return $this->api->requestJson('POST', $path, [
+            'headers' => $this->buildRequiredCsrfHeaders(),
+            'json' => $json,
+        ]);
+    }
+
+    /**
+     * Helper to POST (optionally JSON) with CSRF and expect no content (204).
+     *
+     * @param array<string,mixed> $json
+     */
+    private function postWithCsrfExpectNoContent(string $path, array $json = []): void
+    {
+        $options = [
+            'headers' => $this->buildRequiredCsrfHeaders(),
+        ];
+        if ($json !== []) {
+            $options['json'] = $json;
+        }
+
+        // Let ApiClient handle status code and errors; ignore payload.
+        $this->api->requestJson('POST', $path, $options);
+    }
+
+    /**
      * POST /api/auth/login (CSRF required)
      * @return array<string,mixed>
      */
     public function login(string $email, string $password): array
     {
-        $csrf = $this->generateCsrfToken();
-        return $this->requestJson('POST', '/api/auth/login', [
-            'headers' => ['csrf-token' => $csrf],
-            'json' => [ 'email' => $email, 'password' => $password ],
+        return $this->postJsonWithCsrf(self::PATH_AUTH_LOGIN, [
+            'email' => $email,
+            'password' => $password,
         ]);
     }
 
@@ -225,27 +168,15 @@ final class AuthClient
      */
     public function refresh(?string $csrf = null): array
     {
-        $headers = [];
-        if ($csrf !== null && $csrf !== '') {
-            $headers['csrf-token'] = $csrf;
-        }
-
-        return $this->requestJson('POST', '/api/auth/refresh', [
-            'headers' => $headers,
+        return $this->api->requestJson('POST', self::PATH_AUTH_REFRESH, [
+            'headers' => $this->buildOptionalCsrfHeaders($csrf),
         ]);
     }
 
     /** POST /api/auth/logout (CSRF required) */
     public function logout(): void
     {
-        $csrf = $this->generateCsrfToken();
-        $res = $this->request('POST', '/api/auth/logout', [
-            'headers' => ['csrf-token' => $csrf],
-        ]);
-        $code = $res->getStatusCode();
-        if ($code !== 204 && $code >= 400) {
-            $this->throwForResponse($res);
-        }
+        $this->postWithCsrfExpectNoContent(self::PATH_AUTH_LOGOUT);
     }
 
     /**
@@ -255,11 +186,7 @@ final class AuthClient
      */
     public function register(array $input): array
     {
-        $csrf = $this->generateCsrfToken();
-        return $this->requestJson('POST', '/api/auth/register', [
-            'headers' => ['csrf-token' => $csrf],
-            'json' => $input,
-        ]);
+        return $this->postJsonWithCsrf(self::PATH_AUTH_REGISTER, $input);
     }
 
     /**
@@ -268,25 +195,18 @@ final class AuthClient
      */
     public function passwordRequest(string $email): array
     {
-        $csrf = $this->generateCsrfToken();
-        return $this->requestJson('POST', '/api/auth/password/forgot', [
-            'headers' => ['csrf-token' => $csrf],
-            'json' => [ 'email' => $email ],
+        return $this->postJsonWithCsrf(self::PATH_AUTH_PASSWORD_FORGOT, [
+            'email' => $email,
         ]);
     }
 
     /** POST /api/auth/password/reset (CSRF requis) */
     public function passwordReset(string $token, string $password): void
     {
-        $csrf = $this->generateCsrfToken();
-        $res = $this->request('POST', '/api/auth/password/reset', [
-            'headers' => ['csrf-token' => $csrf],
-            'json' => [ 'token' => $token, 'password' => $password ],
+        $this->postWithCsrfExpectNoContent(self::PATH_AUTH_PASSWORD_RESET, [
+            'token' => $token,
+            'password' => $password,
         ]);
-        $code = $res->getStatusCode();
-        if ($code !== 204 && $code >= 400) {
-            $this->throwForResponse($res);
-        }
     }
 
     /**
@@ -296,10 +216,8 @@ final class AuthClient
      */
     public function inviteUser(string $email): array
     {
-        $csrf = $this->generateCsrfToken();
-        return $this->requestJson('POST', '/api/auth/invite', [
-            'headers' => ['csrf-token' => $csrf],
-            'json' => ['email' => $email],
+        return $this->postJsonWithCsrf(self::PATH_AUTH_INVITE, [
+            'email' => $email,
         ]);
     }
 
@@ -310,27 +228,34 @@ final class AuthClient
      */
     public function completeInvite(string $token, string $password): array
     {
-        $csrf = $this->generateCsrfToken();
-        return $this->requestJson('POST', '/api/auth/invite/complete', [
-            'headers' => ['csrf-token' => $csrf],
-            'json' => [
-                'token' => $token,
-                'password' => $password,
-                'confirmPassword' => $password,
-            ],
+        return $this->postJsonWithCsrf(self::PATH_AUTH_INVITE_COMPLETE, [
+            'token' => $token,
+            'password' => $password,
+            'confirmPassword' => $password,
         ]);
     }
 
     // --- ApiPlatform helpers (User & Invite resources) ---
 
     /**
-     * GET /api/users/me (ApiResource<User>)
+     * GET /api/users
+     *
+     * @return list<UserModel>
      */
-    public function currentUserResource(): UserModel
+    public function listUsers(): array
     {
-        $data = $this->requestJson('GET', '/api/users/me', [
-            'headers' => ['Accept' => 'application/json'],
-        ]);
+        return $this->getJsonLdCollection(
+            self::PATH_USERS,
+            static fn (array $row): UserModel => UserModel::fromArray($row),
+        );
+    }
+
+    /**
+     * GET /api/users/{id}
+     */
+    public function getUser(int $id): UserModel
+    {
+        $data = $this->getJsonLd(self::PATH_USERS.'/'.$id);
 
         return UserModel::fromArray($data);
     }
@@ -342,27 +267,10 @@ final class AuthClient
      */
     public function listInvites(): array
     {
-        $data = $this->requestJson('GET', '/api/invite_users', [
-            'headers' => ['Accept' => 'application/json'],
-        ]);
-
-        if (isset($data['items']) && is_array($data['items'])) {
-            $collection = Collection::fromArray($data);
-            $invites = [];
-            foreach ($collection->all() as $item) {
-                $invites[] = InviteModel::fromArray($item->data());
-            }
-            return $invites;
-        }
-
-        $invites = [];
-        foreach ($data as $row) {
-            if (is_array($row)) {
-                $invites[] = InviteModel::fromArray($row);
-            }
-        }
-
-        return $invites;
+        return $this->getJsonLdCollection(
+            self::PATH_INVITE_USERS,
+            static fn (array $row): InviteModel => InviteModel::fromArray($row),
+        );
     }
 
     /**
@@ -370,10 +278,16 @@ final class AuthClient
      */
     public function getInvite(int $id): InviteModel
     {
-        $data = $this->requestJson('GET', '/api/invite_users/'.$id, [
-            'headers' => ['Accept' => 'application/json'],
-        ]);
+        $data = $this->getJsonLd(self::PATH_INVITE_USERS.'/'.$id);
 
         return InviteModel::fromArray($data);
+    }
+
+    /**
+     * DELETE /api/users/{id}
+     */
+    public function deleteUser(int $id): void
+    {
+        $this->api->requestJson('DELETE', '/api/users/'.$id);
     }
 }
